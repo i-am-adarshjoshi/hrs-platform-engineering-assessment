@@ -1,11 +1,27 @@
 receivers:
+
+  # Receive telemetry from applications
   otlp:
     protocols:
       grpc:
       http:
 
+
+  # Collect host level metrics like CPU and memory
+  hostmetrics:
+    collection_interval: 10s
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      filesystem:
+      network:
+      load:
+
 processors:
   batch:
+    timeout: 10s
+    send_batch_size: 1024
 
 exporters:
   newrelic:
@@ -13,6 +29,7 @@ exporters:
 
 service:
   pipelines:
+
     metrics:
       receivers: [otlp]
       processors: [batch]
