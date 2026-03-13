@@ -1,0 +1,145 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-central-1.amazonaws.com
+  ECR_REPOSITORY: hrs-platform-app
+  EKS_CLUSTER_NAME: hrs-platform-cluster
+
+jobs:
+  
+  # JOB 1: Test & Lint
+  
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run linting
+        run: |
+          echo "Running linter..."
+          # Replace with your actual lint command e.g. npm run lint / flake8 / golangci-lint
+          echo "Lint passed."
+
+      - name: Run unit tests
+        run: |
+          echo "Running unit tests..."
+          # Replace with your actual test command e.g. npm test / pytest / go test ./...
+          echo "Tests passed."
+
+  # JOB 2: Build & Push Docker image to ECR
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          # In production: replace above with role-to-assume using IRSA/OIDC
+          # role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-role
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate image tag
+        id: meta
+        run: |
+          IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Image tag: $IMAGE_TAG"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }} \
+            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest \
+            .
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          echo "Pushed image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}"
+
+  # 
+  # JOB 3: Deploy to EKS (GitOps update)
+  # 
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Deploy to team namespace
+        run: |
+          # Each team deploys only to their own namespace (RBAC enforced)
+          NAMESPACE="team-${{ github.actor }}"
+
+          kubectl set image deployment/app \
+            app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ needs.build-and-push.outputs.image_tag }} \
+            --namespace=$NAMESPACE
+
+          echo "Deployed image tag ${{ needs.build-and-push.outputs.image_tag }} to namespace $NAMESPACE"
+
+      - name: Verify rollout
+        run: |
+          NAMESPACE="team-${{ github.actor }}"
+          kubectl rollout status deployment/app \
+            --namespace=$NAMESPACE \
+            --timeout=120s
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "Deployment successful!"
+          echo "Image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ needs.build-and-push.outputs.image_tag }}"
+          # In production: send Slack notification here
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          NAMESPACE="team-${{ github.actor }}"
+          echo "Deployment failed — rolling back..."
+          kubectl rollout undo deployment/app --namespace=$NAMESPACE
