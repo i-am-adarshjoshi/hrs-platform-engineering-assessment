@@ -30,13 +30,13 @@ jobs:
       - name: Run linting
         run: |
           echo "Running linter..."
-          # Replace with your actual lint command e.g. npm run lint / flake8 / golangci-lint
+          npm run lint 
           echo "Lint passed."
 
       - name: Run unit tests
         run: |
           echo "Running unit tests..."
-          # Replace with your actual test command e.g. npm test / pytest / go test ./...
+          npm test 
           echo "Tests passed."
 
   # JOB 2: Build & Push Docker image to ECR
@@ -59,8 +59,7 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-          # In production: replace above with role-to-assume using IRSA/OIDC
-          # role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-role
+ 
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -86,9 +85,9 @@ jobs:
           docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
           echo "Pushed image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}"
 
-  # 
+  
   # JOB 3: Deploy to EKS (GitOps update)
-  # 
+  
   deploy:
     name: Deploy to EKS
     runs-on: ubuntu-latest
